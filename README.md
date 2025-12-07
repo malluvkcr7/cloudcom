@@ -181,33 +181,3 @@ docker compose logs -f controller
 
 Say: "I stopped worker2. The controller detects the missing heartbeat, selects a new replica target and instructs an existing replica to pull missing keys to restore replication factor."  After a short wait, query workers to show replica count restored.
 
-Record a demo (asciinema)
--------------------------
-If you prefer to record a demo you can use asciinema to capture a reproducible terminal session.
-
-1) Install asciinema (Linux example):
-
-```bash
-# Debian/Ubuntu
-sudo apt install asciinema
-# or via pip: pip install asciinema
-```
-
-2) Record the demo (this captures all commands + output):
-
-```bash
-asciinema rec kvstore-demo.cast
-# run the demo commands (start compose, put/get, stop worker, show logs)
-# press Ctrl-D to finish recording
-```
-
-3) Play back the recording locally:
-
-```bash
-asciinema play kvstore-demo.cast
-```
-
-Notes:
-- asciinema recordings are plain files you can attach to a submission or replay locally; they don't include your terminal font or window size, but they capture commands and output reliably.
-- If you need a short pre-recorded demo I can prepare a recommended command sequence to run while recording.
-
