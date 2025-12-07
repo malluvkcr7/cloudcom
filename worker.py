@@ -88,9 +88,9 @@ def put_key(key: str, kv: KV):
     _persist_key(key, kv.value)
     ack_count = 1  # self
     attempted = set()
-    max_controller_retries = 3
+    max_controller_retries = 5
     controller_retries = 0
-    backoff = 0.2
+    backoff = 0.3
 
     # Keep querying controller for an updated replica map and try newly
     # reported replicas until we reach WRITE_QUORUM or exhaust retries.

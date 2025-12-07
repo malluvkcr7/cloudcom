@@ -77,17 +77,7 @@ sudo docker compose up -d --build
 docker compose up -d --build
 ```
 
-2) Quick smoke-check helper (already added):
 
-```bash
-chmod +x ./scripts/check_compose.sh
-./scripts/check_compose.sh
-```
-
-What the smoke script does
-- Builds & starts the compose stack
-- Waits for controller + workers to report healthy
-- Performs a simple PUT -> GET against `worker1` to confirm quorum replication
 
 Useful debugging commands
 
@@ -124,44 +114,40 @@ Tips & notes
 
 
 
-Viva script (short, read-aloud steps)
------------------------------------
-Use this small script during the viva — run the commands and say the short explanation next to each step.
+Viva 
 
-1) Start the stack (explain: starts controller + 4 workers in containers)
-
+1) Start the stack 
 ```bash
 # if your Docker needs sudo
 sudo docker compose up -d --build
 ```
 
-Say: "I start the controller and four workers using docker-compose. The controller listens on port 8000 and each worker on 8001..8004."
 
-2) Confirm services are healthy (explain: controller sees 4 workers)
+2) Confirm services are healthy 
 
 ```bash
 curl http://localhost:8000/health
 ```
 
-Say: "Controller returned its health and reports four registered workers." (expect JSON with workers_count:4)
 
-3) Show mapping for a demo key (explain: controller maps key -> primary + replicas)
+
+3) Show mapping for a demo key 
 
 ```bash
 curl "http://localhost:8000/map?key=demo-key"
 ```
 
-Say: "This shows how the controller maps keys to a primary and replicas — the first address is the primary."
 
-4) Put a key (explain: write waits for a write-quorum)
+
+4) Put a key 
 
 ```bash
 curl -s -X PUT "http://localhost:8001/kv/demo-key" -H 'Content-Type: application/json' -d '{"value":"v1"}'
 ```
 
-Say: "The worker storing the primary attempts to replicate to the configured replicas and returns once the write-quorum is met." (expect acks >= WRITE_QUORUM)
 
-5) Read the key from multiple workers (explain: show replication)
+
+5) Read the key from multiple workers 
 
 ```bash
 curl http://localhost:8001/kv/demo-key
@@ -169,9 +155,9 @@ curl http://localhost:8002/kv/demo-key
 curl http://localhost:8003/kv/demo-key
 ```
 
-Say: "You can see the key is present on multiple workers due to replication." (expect value v1 on at least replicas)
 
-6) Demonstrate failure + re-replication (explain: controller detects failure and re-replicates)
+
+6) Demonstrate failure + re-replication 
 
 ```bash
 docker compose stop worker2
@@ -179,5 +165,5 @@ docker compose stop worker2
 docker compose logs -f controller
 ```
 
-Say: "I stopped worker2. The controller detects the missing heartbeat, selects a new replica target and instructs an existing replica to pull missing keys to restore replication factor."  After a short wait, query workers to show replica count restored.
+
 
