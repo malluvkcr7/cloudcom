@@ -1,41 +1,32 @@
 # Distributed Key-Value Store (MVP)
 
-This small project implements a minimal distributed key-value store prototype with:
-- 1 Controller (partition mapping + worker registry)
-- Multiple Workers (in-memory key store + replication endpoints)
+A minimal distributed key-value store prototype implemented in Python using FastAPI with full replication, persistence, and failure recovery.
 
-Quick start (local, requires Python 3.10+):
+## Architecture
 
-1. Create a virtualenv and install dependencies
+**Core Components:**
+- **Controller** — maintains worker registry, answers partition mapping queries (primary + replicas), watches heartbeats and triggers re-replication when workers fail
+- **Workers** — store key/value pairs, persist them to Docker volumes, accept replication requests and heartbeat to the controller. Writes use configurable `WRITE_QUORUM`
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+**Key Features:**
+- ✅ Partitioning via `hash(key) mod N` → primary + replica selection
+- ✅ Replication with configurable `REPLICAS=3` and `WRITE_QUORUM=2`
+- ✅ Controller watcher detects failed workers (heartbeat timeout) and triggers re-replication
+- ✅ Worker persistence: each key stored as JSON file under `/app/data` on Docker volumes (survives restarts)
+- ✅ Dynamic worker registration via heartbeats (no pre-configuration needed)
+- ✅ Integration tests (pytest) covering mapping, quorum, and re-replication behavior
+- ✅ Interactive web UI for demonstrating operations
+- ✅ Docker Compose stack with controller + 4 workers, health checks, and named volumes
 
-2. Start controller and a worker (manual start for local testing):
+---
 
-```bash
-## Distributed Key-Value Store (MVP)
+## Quick Start (Local Development)
 
-Small demonstrable prototype of a distributed key-value store implemented in Python using FastAPI.
+### Prerequisites
+- Python 3.10+
+- Docker and Docker Compose (for containerized demo)
 
-Core components
-- Controller — maintains worker registry, answers mapping queries (primary + replicas), watches heartbeats and triggers re-replication when workers fail.
-- Workers — store key/value pairs, persist them to disk, accept replication requests and heartbeat to the controller. Writes use a configurable WRITE_QUORUM.
-
-Key features implemented
-- Partitioning via simple hash(key) → primary + replica selection.
-- Replication with configurable REPLICAS and WRITE_QUORUM.
-- Controller watcher that detects failed workers (heartbeat timeout) and triggers re-replication.
-- Worker persistence: each key is stored as a file under the worker's data directory and loaded on startup.
-- Integration tests (pytest) that exercise mapping, quorum and re-replication behavior.
-- Dockerfile + docker-compose for demo (controller + 4 workers) and a helper script to smoke-test the stack.
-
-Quick local setup (recommended for development)
-
-1) Create virtualenv and install dependencies
+### 1. Install Dependencies
 
 ```bash
 python -m venv .venv
@@ -43,127 +34,332 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-2) Run tests (fast, uses local uvicorn processes)
+### 2. Run Tests
 
 ```bash
-".venv/bin/python" -m pytest -q
+.venv/bin/python -m pytest -q
 ```
 
-Manual run (two-terminal workflow)
+All 3 integration tests should pass (controller mapping, quorum writes, re-replication).
 
-Terminal A (controller):
+### 3. Manual Run (Two-Terminal Workflow)
 
+**Terminal A — Controller:**
 ```bash
+export PYTHONPATH=.
 uvicorn controller:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Terminal B (worker):
-
+**Terminal B — Worker:**
 ```bash
 export CONTROLLER=http://localhost:8000
 export ADDRESS=http://localhost:8001
 export ID=w1
+export PYTHONPATH=.
 uvicorn worker:app --reload --host 0.0.0.0 --port 8001
 ```
 
-Demo using Docker Compose (recommended for viva/demo)
+Test with:
+```bash
+curl -X PUT "http://localhost:8001/kv/mykey" -H 'Content-Type: application/json' -d '{"value":"hello"}'
+curl http://localhost:8001/kv/mykey
+```
 
-1) Build and start the stack (from repo root)
+---
+
+## Docker Compose Demo (Recommended for Viva)
+
+### Start the Stack
 
 ```bash
-# if your Docker requires sudo
+# If Docker requires sudo
 sudo docker compose up -d --build
-# or if your user can access docker socket
+
+# Or if user has Docker socket access
 docker compose up -d --build
 ```
 
+This starts:
+- 1 Controller (port 8000)
+- 4 Workers (ports 8001–8004)
+- Named volumes for persistence on each worker
 
+### Access the Web UI
 
-Useful debugging commands
+**Open your browser:** http://localhost:8000/
+
+The interactive UI provides:
+- **📝 Write Key** — Store a value with quorum replication
+- **📖 Read Key** — Retrieve from any worker
+- **📊 System Status** — Monitor worker health (auto-refreshes every 10s)
+- **📋 List Keys** — Browse all stored keys
+
+### Health Check
 
 ```bash
-docker compose ps
-docker compose logs --tail=200 controller worker1 worker2 worker3 worker4
 curl http://localhost:8000/health
+```
+
+Expected output:
+```json
+{"status":"controller up","workers_count":4}
+```
+
+### Useful Debug Commands
+
+```bash
+# View all services
+docker compose ps
+
+# Watch logs
+docker compose logs -f controller
+docker compose logs -f worker1
+
+# Inspect a single service
 curl http://localhost:8001/health
+
+# Clean up (removes volumes)
 docker compose down -v
 ```
 
-Demo scenario ideas for viva (commands)
+---
 
-- Show mapping for a key:
-	curl "http://localhost:8000/map?key=somekey"
+## Viva Demonstration Script
 
-- Write a key (writes to primary and waits for WRITE_QUORUM):
-	curl -X PUT "http://localhost:8001/kv/somekey" -H 'Content-Type: application/json' -d '{"value":"v"}'
+### 1. Start the Stack
 
-- Show the key from each worker (to show replication):
-	curl http://localhost:8001/kv/somekey
-	curl http://localhost:8002/kv/somekey
-
-- Demonstrate failure + re-replication:
-	1. Stop a worker (example using compose):
-		 docker compose stop worker2
-	2. Wait a few seconds for controller watcher to detect the failure (HEARTBEAT_TIMEOUT configured in compose). Controller will log re-replication actions.
-	3. Check that the controller instructed another live worker to pull missing keys and that replicas are restored.
-
-Tips & notes
-- If host ports 8000..8004 are in use, stop the conflicting processes (uvicorn instances used for local testing) before running compose, or change ports in `docker-compose.yml`.
-- If docker reports "permission denied" access to the socket, either run compose with `sudo` or add your user to the `docker` group and re-login.
-- The system is intentionally small; extension ideas include async background replication (fire-and-forget for non-quorum replicas), stronger failure detectors, and a consistent hashing ring for dynamic worker membership.
-
-
-
-Viva 
-
-1) Start the stack 
 ```bash
-# if your Docker needs sudo
 sudo docker compose up -d --build
+sleep 3
 ```
 
-
-2) Confirm services are healthy 
+### 2. Show System Health
 
 ```bash
 curl http://localhost:8000/health
 ```
+*Expected: 4 workers registered*
 
-
-
-3) Show mapping for a demo key 
+### 3. Get Partition Mapping
 
 ```bash
 curl "http://localhost:8000/map?key=demo-key"
 ```
+*Shows primary worker + 2 replicas for the key*
 
+### 4. Write Using the Web UI (Recommended)
 
+Open http://localhost:8000/ and use the **Write Key** section:
+- Key: `demo-key`
+- Value: `demo-value`
+- Click **Write**
 
-4) Put a key 
-
+Or via CLI:
 ```bash
-curl -s -X PUT "http://localhost:8001/kv/demo-key" -H 'Content-Type: application/json' -d '{"value":"v1"}'
+curl -s -X PUT "http://localhost:8001/kv/demo-key" \
+  -H 'Content-Type: application/json' \
+  -d '{"value":"demo-value"}'
 ```
 
+### 5. Verify Replication (Read from Multiple Workers)
 
+Using the Web UI:
+- Use the **Read Key** section and try reading from different workers (dropdown menu)
 
-5) Read the key from multiple workers 
-
+Or via CLI:
 ```bash
 curl http://localhost:8001/kv/demo-key
 curl http://localhost:8002/kv/demo-key
 curl http://localhost:8003/kv/demo-key
 ```
 
+*All three should return the value (demonstrates replication)*
 
+### 6. Demonstrate Failure + Re-replication
 
-6) Demonstrate failure + re-replication 
-
+**In Web UI or Terminal 1:**
 ```bash
 docker compose stop worker2
-# watch controller logs for re-replication activity
+```
+
+**In Terminal 2 (watch controller logs):**
+```bash
 docker compose logs -f controller
 ```
+
+*You'll see:*
+- Controller detects worker2 heartbeat timeout (after ~6s)
+- Controller marks worker2 as down
+- Controller instructs another worker to pull missing keys from backups
+- Replicas are automatically restored
+
+**Recover the worker:**
+```bash
+docker compose start worker2
+```
+
+*Worker2 rejoins and re-synchronizes with the cluster*
+
+---
+
+## Data Persistence
+
+Each worker stores data in a Docker named volume mounted at `/app/data`:
+
+**Local filesystem location:**
+```bash
+sudo ls /var/lib/docker/volumes/kvstore_worker1_data/_data/
+```
+
+**Key format:** JSON files named after the key (URL-encoded):
+```
+/var/lib/docker/volumes/kvstore_worker1_data/_data/mykey
+```
+
+**Contents:**
+```json
+{"value": "hello"}
+```
+
+**Persistence across restarts:**
+```bash
+docker compose stop worker1
+docker compose start worker1
+# Data is still there!
+curl http://localhost:8001/kv/mykey
+```
+
+---
+
+## API Reference
+
+### Controller Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | Health check; returns worker count |
+| GET | `/map?key=<key>` | Get primary + replica addresses for key |
+| GET | `/workers` | List all registered workers |
+| POST | `/heartbeat` | Worker heartbeat (internal) |
+
+### Worker Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| PUT | `/kv/{key}` | Write key (coordinates replication) |
+| GET | `/kv/{key}` | Read key value |
+| GET | `/keys` | List all keys stored locally |
+| POST | `/replicate/{key}` | Receive replicated write (internal) |
+| POST | `/pull` | Pull keys from peer (internal) |
+| GET | `/health` | Health check |
+
+---
+
+## Configuration
+
+**Controller Environment Variables:**
+```bash
+WORKERS              # Comma-separated worker URLs (used for initial startup)
+REPLICAS            # Number of replicas per key (default: 3)
+HEARTBEAT_TIMEOUT   # Seconds before marking worker down (default: 6)
+CHECK_INTERVAL      # Seconds between failure checks (default: 2)
+```
+
+**Worker Environment Variables:**
+```bash
+CONTROLLER          # Controller URL
+ADDRESS             # Worker's own address
+ID                  # Worker ID (e.g., w1)
+WRITE_QUORUM        # Acks needed for write success (default: 2)
+DATA_DIR            # Directory for persistence (default: /app/data in containers)
+REQUEST_TIMEOUT     # HTTP timeout in seconds (default: 2)
+```
+
+---
+
+## Testing
+
+### Run All Tests
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+### Test Coverage
+
+1. **test_controller.py** — Verifies mapping returns correct primary + replicas
+2. **test_quorum.py** — Tests write quorum behavior when workers fail
+3. **test_rereplication.py** — Validates controller detects failures and re-replicates
+
+All tests pass with robust retry logic (allows time for heartbeat propagation).
+
+---
+
+## Troubleshooting
+
+### Port Already in Use
+
+```bash
+# Kill conflicting processes
+sudo lsof -i :8000
+sudo kill -9 <PID>
+
+# Or update docker-compose.yml ports
+```
+
+### Docker Permission Denied
+
+```bash
+# Option 1: Use sudo
+sudo docker compose up -d --build
+
+# Option 2: Add user to docker group
+sudo usermod -aG docker $USER
+newgrp docker
+```
+
+### Worker Won't Register
+
+Check heartbeat logs:
+```bash
+docker compose logs worker1 | grep heartbeat
+```
+
+Ensure `CONTROLLER` env var is correct (use service name for Docker: `http://controller:8000`)
+
+### Data Not Persisting
+
+Verify volume mount:
+```bash
+docker inspect kvstore_worker1_data
+```
+
+Check `/var/lib/docker/volumes/kvstore_worker1_data/_data/`
+
+---
+
+## Architecture Notes
+
+- **Hash partitioning:** Uses SHA-256 hash to deterministically map keys to workers
+- **Eventual consistency:** Reads may hit stale replicas during failure recovery
+- **Quorum writes:** WRITE_QUORUM=2 means 1 local + 1 remote ack required
+- **Failure detection:** Simple heartbeat with timeout; no fancy gossip protocol
+- **Re-replication:** Sequential pull of missing keys; not optimized for large datasets
+
+## Extension Ideas
+
+- Async background replication (fire-and-forget for non-quorum replicas)
+- Stronger failure detectors (phi-accrual)
+- Consistent hashing ring for dynamic worker membership
+- Load balancing across replicas
+- Snapshot-based recovery instead of key-by-key replication
+- Geo-distributed replicas
+
+---
+
+## License
+
+MIT (educational use)
 
 
 
