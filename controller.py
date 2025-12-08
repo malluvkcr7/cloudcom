@@ -1,4 +1,7 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List
 import hashlib
@@ -8,6 +11,15 @@ import threading
 import requests
 
 app = FastAPI(title="kv-controller")
+
+# Add CORS middleware to allow requests from the browser
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods
+    allow_headers=["*"],  # Allow all headers
+)
 
 # Worker registry: id -> {address, last_seen}
 workers: Dict[str, Dict] = {}
@@ -151,3 +163,13 @@ def watcher_loop():
 def start_watcher():
     t = threading.Thread(target=watcher_loop, daemon=True)
     t.start()
+
+# Mount static files for the web UI
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.isdir(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+@app.get("/")
+def root():
+    """Serve the main UI"""
+    return FileResponse(os.path.join(os.path.dirname(__file__), "static", "index.html"))

@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
 import threading
@@ -8,6 +9,15 @@ from typing import Dict, List
 import random
 
 app = FastAPI(title="kv-worker")
+
+# Add CORS middleware to allow requests from the browser
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods
+    allow_headers=["*"],  # Allow all headers
+)
 STORE: Dict[str, str] = {}
 
 CONTROLLER = os.environ.get("CONTROLLER", "http://localhost:8000")
@@ -15,12 +25,16 @@ ADDRESS = os.environ.get("ADDRESS", "http://localhost:8001")
 ID = os.environ.get("ID", "w0")
 WRITE_QUORUM = int(os.environ.get("WRITE_QUORUM", "2"))
 REQUEST_TIMEOUT = float(os.environ.get("REQUEST_TIMEOUT", "2"))
-# data directory for persistence; if not provided use a per-worker folder
+# data directory for persistence; defaults to /app/data for container volumes
+# for local testing, defaults to data_{ID} in current directory
 DATA_DIR = os.environ.get("DATA_DIR")
 if not DATA_DIR:
-    # default to a local folder that includes the worker ID so local tests
-    # and multiple workers don't clobber each other
-    DATA_DIR = os.path.abspath(os.path.join(os.getcwd(), f"data_{ID}"))
+    # Check if we're in a container (if /app exists)
+    if os.path.isdir("/app"):
+        DATA_DIR = "/app/data"
+    else:
+        # Local testing: use per-worker folder to avoid conflicts
+        DATA_DIR = os.path.abspath(os.path.join(os.getcwd(), f"data_{ID}"))
 
 import json
 import urllib.parse
@@ -83,6 +97,7 @@ def startup():
 def put_key(key: str, kv: KV):
     # Coordinator behavior: store locally, then synchronously replicate to peers until
     # we have WRITE_QUORUM acknowledgements (including local store).
+    # Once quorum is reached, replicate to remaining replicas in background.
     STORE[key] = kv.value
     # persist locally
     _persist_key(key, kv.value)
@@ -94,11 +109,13 @@ def put_key(key: str, kv: KV):
 
     # Keep querying controller for an updated replica map and try newly
     # reported replicas until we reach WRITE_QUORUM or exhaust retries.
+    all_replicas = []
     while ack_count < WRITE_QUORUM and controller_retries < max_controller_retries:
         try:
             r = requests.get(f"{CONTROLLER}/map", params={"key": key}, timeout=REQUEST_TIMEOUT)
             data = r.json()
             replicas = data.get("replicas", [])
+            all_replicas = replicas  # Save for later background replication
         except Exception:
             # controller unreachable — wait and retry a couple times
             controller_retries += 1
@@ -145,6 +162,25 @@ def put_key(key: str, kv: KV):
             time.sleep(backoff)
 
     if ack_count >= WRITE_QUORUM:
+        # Quorum achieved! Now replicate to any remaining replicas in background
+        # (the 3rd replica, since we already have 2 acks)
+        def background_replicate():
+            remaining = []
+            for addr in all_replicas:
+                a = addr.rstrip("/")
+                if a != ADDRESS.rstrip("/") and a not in attempted:
+                    remaining.append(a)
+            # Try to replicate to any remaining replicas
+            for addr in remaining:
+                try:
+                    requests.post(f"{addr}/replicate/{key}", json={"value": kv.value}, timeout=REQUEST_TIMEOUT)
+                except Exception:
+                    pass
+        
+        # Start background replication thread
+        t = threading.Thread(target=background_replicate, daemon=True)
+        t.start()
+        
         return {"result": "ok", "acks": ack_count}
     else:
         # not enough replicas acknowledged

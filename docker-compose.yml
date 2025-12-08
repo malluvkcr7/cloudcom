@@ -24,6 +24,7 @@ services:
       ADDRESS: "http://worker1:8001"
       ID: "w1"
       WRITE_QUORUM: "2"
+      DATA_DIR: "/app/data"
     ports:
       - "8001:8001"
     healthcheck:
@@ -43,6 +44,7 @@ services:
       ADDRESS: "http://worker2:8002"
       ID: "w2"
       WRITE_QUORUM: "2"
+      DATA_DIR: "/app/data"
     ports:
       - "8002:8002"
     healthcheck:
@@ -62,6 +64,7 @@ services:
       ADDRESS: "http://worker3:8003"
       ID: "w3"
       WRITE_QUORUM: "2"
+      DATA_DIR: "/app/data"
     ports:
       - "8003:8003"
     healthcheck:
@@ -81,6 +84,7 @@ services:
       ADDRESS: "http://worker4:8004"
       ID: "w4"
       WRITE_QUORUM: "2"
+      DATA_DIR: "/app/data"
     ports:
       - "8004:8004"
     healthcheck:

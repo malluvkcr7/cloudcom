@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Distributed Key-Value Store</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 40px;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .header p {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 10px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            animation: slideUp 0.5s ease-out;
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .card h2 {
+            color: #667eea;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #333;
+            font-weight: 500;
+        }
+
+        input[type="text"],
+        textarea,
+        select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 5px;
+            font-size: 1em;
+            transition: border-color 0.3s;
+        }
+
+        input[type="text"]:focus,
+        textarea:focus,
+        select:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 5px rgba(102, 126, 234, 0.3);
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 80px;
+            font-family: 'Courier New', monospace;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        button {
+            flex: 1;
+            padding: 12px 20px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        button:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        .button-secondary {
+            background: #764ba2;
+        }
+
+        .button-secondary:hover {
+            background: #663a8a;
+        }
+
+        .status {
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            font-weight: 500;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+
+        .status.hidden {
+            display: none;
+        }
+
+        .result-box {
+            background: #f8f9fa;
+            border: 2px solid #667eea;
+            border-radius: 5px;
+            padding: 15px;
+            margin-top: 15px;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            word-break: break-all;
+        }
+
+        .result-box.empty {
+            color: #999;
+            font-style: italic;
+        }
+
+        .info-section {
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 2px solid #e0e0e0;
+        }
+
+        .worker-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .worker-item {
+            background: #f0f0f0;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 0.9em;
+            border-left: 4px solid #667eea;
+        }
+
+        .worker-item.healthy {
+            border-left-color: #28a745;
+            background: #f0fff4;
+        }
+
+        .worker-item.unhealthy {
+            border-left-color: #dc3545;
+            background: #fff5f5;
+        }
+
+        .worker-status {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 8px;
+            vertical-align: middle;
+        }
+
+        .worker-status.healthy {
+            background: #28a745;
+        }
+
+        .worker-status.unhealthy {
+            background: #dc3545;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .stat-item {
+            background: #f0f0f0;
+            padding: 15px;
+            border-radius: 5px;
+            text-align: center;
+        }
+
+        .stat-number {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .stat-label {
+            color: #666;
+            font-size: 0.9em;
+            margin-top: 5px;
+        }
+
+        .full-width {
+            grid-column: 1 / -1;
+        }
+
+        @media (max-width: 768px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+
+            .header h1 {
+                font-size: 1.8em;
+            }
+
+            .worker-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 3px solid rgba(102, 126, 234, 0.3);
+            border-radius: 50%;
+            border-top-color: #667eea;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔑 Distributed Key-Value Store</h1>
+            <p>Interactive Demo Interface</p>
+        </div>
+
+        <div class="main-content">
+            <!-- Write Section -->
+            <div class="card">
+                <h2>📝 Write Key</h2>
+                <div id="writeStatus" class="status hidden"></div>
+
+                <div class="form-group">
+                    <label for="writeKey">Key:</label>
+                    <input type="text" id="writeKey" placeholder="Enter key name" />
+                </div>
+
+                <div class="form-group">
+                    <label for="writeValue">Value:</label>
+                    <textarea id="writeValue" placeholder="Enter value"></textarea>
+                </div>
+
+                <div class="button-group">
+                    <button onclick="writeKey()">💾 Write</button>
+                    <button class="button-secondary" onclick="clearWriteForm()">Clear</button>
+                </div>
+
+                <div id="writeResult" class="result-box empty">Write result will appear here...</div>
+            </div>
+
+            <!-- Read Section -->
+            <div class="card">
+                <h2>📖 Read Key</h2>
+                <div id="readStatus" class="status hidden"></div>
+
+                <div class="form-group">
+                    <label for="readKey">Key:</label>
+                    <input type="text" id="readKey" placeholder="Enter key name" />
+                </div>
+
+                <div class="form-group">
+                    <label for="readWorker">Read from Worker:</label>
+                    <select id="readWorker">
+                        <option value="">Any Worker (primary)</option>
+                        <option value="w1">Worker 1 (Port 8001)</option>
+                        <option value="w2">Worker 2 (Port 8002)</option>
+                        <option value="w3">Worker 3 (Port 8003)</option>
+                        <option value="w4">Worker 4 (Port 8004)</option>
+                    </select>
+                </div>
+
+                <div class="button-group">
+                    <button onclick="readKey()">🔍 Read</button>
+                    <button class="button-secondary" onclick="clearReadForm()">Clear</button>
+                </div>
+
+                <div id="readResult" class="result-box empty">Read result will appear here...</div>
+            </div>
+
+            <!-- System Status Section -->
+            <div class="card full-width">
+                <h2>📊 System Status</h2>
+                <div id="statusStatus" class="status hidden"></div>
+
+                <button onclick="checkStatus()" style="width: 100%; margin-bottom: 20px;">🔄 Refresh Status</button>
+
+                <div id="statusInfo">
+                    <div class="stats">
+                        <div class="stat-item">
+                            <div class="stat-number" id="totalWorkers">-</div>
+                            <div class="stat-label">Total Workers</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-number" id="healthyWorkers">-</div>
+                            <div class="stat-label">Healthy Workers</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-number" id="mappingInfo">-</div>
+                            <div class="stat-label">Mapping Ready</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-number" id="replicaInfo">-</div>
+                            <div class="stat-label">Replicas Per Key</div>
+                        </div>
+                    </div>
+
+                    <div class="info-section">
+                        <h3 style="color: #667eea; margin-bottom: 15px;">Worker Health</h3>
+                        <div class="worker-grid" id="workerList">
+                            <p style="grid-column: 1/-1; color: #999;">Loading...</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- List Keys Section -->
+            <div class="card full-width">
+                <h2>📋 List All Keys</h2>
+                <div id="listStatus" class="status hidden"></div>
+
+                <div class="form-group">
+                    <label for="listWorker">From Worker:</label>
+                    <select id="listWorker">
+                        <option value="">Worker 1 (Primary)</option>
+                        <option value="w2">Worker 2</option>
+                        <option value="w3">Worker 3</option>
+                        <option value="w4">Worker 4</option>
+                    </select>
+                </div>
+
+                <button onclick="listAllKeys()" style="width: 100%;">📚 List Keys</button>
+
+                <div id="listResult" class="result-box empty">Keys will appear here...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000';
+        const WORKERS = [
+            { id: 'w1', port: 8001, name: 'Worker 1' },
+            { id: 'w2', port: 8002, name: 'Worker 2' },
+            { id: 'w3', port: 8003, name: 'Worker 3' },
+            { id: 'w4', port: 8004, name: 'Worker 4' }
+        ];
+
+        function showStatus(elementId, message, type) {
+            const el = document.getElementById(elementId);
+            el.textContent = message;
+            el.className = `status ${type}`;
+        }
+
+        function hideStatus(elementId) {
+            const el = document.getElementById(elementId);
+            el.className = 'status hidden';
+        }
+
+        async function writeKey() {
+            const key = document.getElementById('writeKey').value.trim();
+            const value = document.getElementById('writeValue').value.trim();
+
+            if (!key || !value) {
+                showStatus('writeStatus', '⚠️ Key and value are required', 'error');
+                return;
+            }
+
+            try {
+                showStatus('writeStatus', '⏳ Writing...', 'info');
+                const response = await fetch(`http://localhost:8001/kv/${key}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ value })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    showStatus('writeStatus', '✅ Write successful!', 'success');
+                    document.getElementById('writeResult').className = 'result-box';
+                    document.getElementById('writeResult').innerHTML = `<strong>Result:</strong><br/>${JSON.stringify(data, null, 2)}`;
+                    clearWriteForm();
+                } else {
+                    const error = await response.text();
+                    showStatus('writeStatus', `❌ Write failed: ${response.status}`, 'error');
+                    document.getElementById('writeResult').className = 'result-box';
+                    document.getElementById('writeResult').textContent = error;
+                }
+            } catch (error) {
+                showStatus('writeStatus', `❌ Error: ${error.message}`, 'error');
+                document.getElementById('writeResult').className = 'result-box';
+                document.getElementById('writeResult').textContent = error.message;
+            }
+        }
+
+        async function readKey() {
+            const key = document.getElementById('readKey').value.trim();
+            const workerChoice = document.getElementById('readWorker').value;
+
+            if (!key) {
+                showStatus('readStatus', '⚠️ Key is required', 'error');
+                return;
+            }
+
+            try {
+                showStatus('readStatus', '⏳ Reading...', 'info');
+                
+                let url;
+                if (workerChoice) {
+                    const worker = WORKERS.find(w => w.id === workerChoice);
+                    url = `http://localhost:${worker.port}/kv/${key}`;
+                } else {
+                    url = `http://localhost:8001/kv/${key}`;
+                }
+
+                const response = await fetch(url);
+
+                if (response.ok) {
+                    const data = await response.json();
+                    showStatus('readStatus', '✅ Read successful!', 'success');
+                    document.getElementById('readResult').className = 'result-box';
+                    document.getElementById('readResult').innerHTML = `<strong>Value:</strong><br/>${JSON.stringify(data, null, 2)}`;
+                } else if (response.status === 404) {
+                    showStatus('readStatus', '⚠️ Key not found', 'error');
+                    document.getElementById('readResult').className = 'result-box';
+                    document.getElementById('readResult').textContent = 'Key does not exist';
+                } else {
+                    showStatus('readStatus', `❌ Read failed: ${response.status}`, 'error');
+                    document.getElementById('readResult').className = 'result-box';
+                    document.getElementById('readResult').textContent = await response.text();
+                }
+            } catch (error) {
+                showStatus('readStatus', `❌ Error: ${error.message}`, 'error');
+                document.getElementById('readResult').className = 'result-box';
+                document.getElementById('readResult').textContent = error.message;
+            }
+        }
+
+        async function checkStatus() {
+            try {
+                showStatus('statusStatus', '⏳ Checking system status...', 'info');
+                
+                const response = await fetch(`${API_BASE}/health`);
+                if (!response.ok) throw new Error('Controller unreachable');
+
+                const data = await response.json();
+                const workersCount = data.workers_count || 0;
+
+                // Check individual worker health
+                let healthyCount = 0;
+                const workerStatuses = [];
+
+                for (const worker of WORKERS) {
+                    try {
+                        const wResponse = await fetch(`http://localhost:${worker.port}/health`, { timeout: 2000 });
+                        const healthy = wResponse.ok;
+                        if (healthy) healthyCount++;
+                        workerStatuses.push({ ...worker, healthy });
+                    } catch (e) {
+                        workerStatuses.push({ ...worker, healthy: false });
+                    }
+                }
+
+                // Update stats
+                document.getElementById('totalWorkers').textContent = workersCount;
+                document.getElementById('healthyWorkers').textContent = healthyCount;
+                document.getElementById('mappingInfo').textContent = '✅ Ready';
+                document.getElementById('replicaInfo').textContent = '3';
+
+                // Update worker list
+                const workerList = document.getElementById('workerList');
+                workerList.innerHTML = workerStatuses.map(w => `
+                    <div class="worker-item ${w.healthy ? 'healthy' : 'unhealthy'}">
+                        <span class="worker-status ${w.healthy ? 'healthy' : 'unhealthy'}"></span>
+                        <strong>${w.name}</strong><br/>
+                        <small>${w.healthy ? '✅ Healthy' : '❌ Unhealthy'}</small>
+                    </div>
+                `).join('');
+
+                showStatus('statusStatus', '✅ Status updated!', 'success');
+            } catch (error) {
+                showStatus('statusStatus', `❌ Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function listAllKeys() {
+            const workerChoice = document.getElementById('listWorker').value;
+            const port = workerChoice ? WORKERS.find(w => w.id === workerChoice).port : 8001;
+
+            try {
+                showStatus('listStatus', '⏳ Fetching keys...', 'info');
+                const response = await fetch(`http://localhost:${port}/keys`);
+
+                if (response.ok) {
+                    const data = await response.json();
+                    const keys = data.keys || [];
+                    showStatus('listStatus', `✅ Found ${keys.length} key(s)`, 'success');
+                    document.getElementById('listResult').className = 'result-box';
+                    document.getElementById('listResult').innerHTML = keys.length > 0 
+                        ? `<strong>Keys (${keys.length}):</strong><br/>${keys.map(k => `• ${k}`).join('<br/>')}`
+                        : 'No keys found';
+                } else {
+                    showStatus('listStatus', `❌ Failed: ${response.status}`, 'error');
+                }
+            } catch (error) {
+                showStatus('listStatus', `❌ Error: ${error.message}`, 'error');
+            }
+        }
+
+        function clearWriteForm() {
+            document.getElementById('writeKey').value = '';
+            document.getElementById('writeValue').value = '';
+            document.getElementById('writeResult').className = 'result-box empty';
+            document.getElementById('writeResult').textContent = 'Write result will appear here...';
+            hideStatus('writeStatus');
+        }
+
+        function clearReadForm() {
+            document.getElementById('readKey').value = '';
+            document.getElementById('readResult').className = 'result-box empty';
+            document.getElementById('readResult').textContent = 'Read result will appear here...';
+            hideStatus('readStatus');
+        }
+
+        // Initial status check
+        window.addEventListener('load', () => {
+            checkStatus();
+            setInterval(checkStatus, 10000); // Auto-refresh every 10 seconds
+        });
+    </script>
+</body>
+</html>
