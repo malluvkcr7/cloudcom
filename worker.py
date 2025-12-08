@@ -211,7 +211,10 @@ def pull_from(req: PullReq):
         try:
             r = requests.get(f"{req.source}/kv/{k}", timeout=REQUEST_TIMEOUT)
             if r.status_code == 200:
-                STORE[k] = r.json().get("value")
+                value = r.json().get("value")
+                STORE[k] = value
+                # persist the pulled key
+                _persist_key(k, value)
         except Exception:
             pass
     return {"result": "pulled", "count": len(req.keys)}

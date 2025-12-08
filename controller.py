@@ -9,6 +9,12 @@ import os
 import time
 import threading
 import requests
+import sys
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="kv-controller")
 
@@ -80,18 +86,21 @@ def health():
     return {"status": "controller up", "workers_count": len(workers)}
 
 
-def re_replicate(failed_id: str):
+def re_replicate(failed_id: str, snapshot: Dict = None):
     """Attempt to re-replicate keys for which the failed worker was a replica.
     This is a simple implementation: query one alive worker for keys and for each
     key whose replica set included the failed worker, instruct a target alive
     worker to pull the key from an existing replica.
     """
-    # take a snapshot of workers mapping at failure time
-    snapshot = {k: v.copy() for k, v in workers.items()}
+    logger.info(f"[RE-REPLICATE] Starting re-replication for failed worker: {failed_id}")
+    # use provided snapshot (taken before worker was removed from registry)
+    if snapshot is None:
+        snapshot = {k: v.copy() for k, v in workers.items()}
     pre_workers = sorted(snapshot.keys())
     try:
         idx_failed = pre_workers.index(failed_id)
     except ValueError:
+        logger.info(f"[RE-REPLICATE] Failed worker {failed_id} not in pre_workers list")
         return
     n = len(pre_workers)
     # current live addresses (exclude failed)
@@ -104,8 +113,10 @@ def re_replicate(failed_id: str):
     try:
         r = requests.get(f"{source_addr}/keys", timeout=3)
         keys = r.json().get("keys", [])
+        logger.info(f"[RE-REPLICATE] Found {len(keys)} keys on source {source_addr}")
     except Exception:
         keys = []
+        logger.info(f"[RE-REPLICATE] Failed to get keys from source {source_addr}")
 
     for key in keys:
         # compute replicas list as it was before failure
@@ -117,6 +128,7 @@ def re_replicate(failed_id: str):
         # if failed worker's address was among replicas, we need to replicate elsewhere
         failed_addr = snapshot[failed_id]["address"]
         if failed_addr in replica_addrs:
+            logger.info(f"[RE-REPLICATE] Key '{key}' needs re-replication (was on failed worker)")
             # determine which current live workers already have the key
             have = []
             for addr in live:
@@ -134,11 +146,16 @@ def re_replicate(failed_id: str):
                     break
             # choose a source replica among have (if any)
             src = have[0] if have else source_addr
+            logger.info(f"[RE-REPLICATE] Key '{key}': have={have}, target={target}, src={src}")
             if target:
                 try:
+                    logger.info(f"[RE-REPLICATE] Instructing {target} to pull '{key}' from {src}")
                     requests.post(f"{target}/pull", json={"source": src, "keys": [key]}, timeout=5)
-                except Exception:
-                    pass
+                    logger.info(f"[RE-REPLICATE] Successfully re-replicated '{key}' to {target}")
+                except Exception as e:
+                    logger.info(f"[RE-REPLICATE] Failed to re-replicate '{key}': {e}")
+            else:
+                logger.info(f"[RE-REPLICATE] No target found for '{key}' - all live workers already have it")
 
 
 def watcher_loop():
@@ -148,9 +165,13 @@ def watcher_loop():
             last = info.get("last_seen", 0)
             if now - last > HEARTBEAT_TIMEOUT and wid not in down_workers:
                 # detected down
+                logger.info(f"[WATCHER] Detected worker {wid} is down (last seen: {last}, now: {now})")
                 down_workers.add(wid)
-                # attempt re-replication in background
-                threading.Thread(target=re_replicate, args=(wid,), daemon=True).start()
+                # Take snapshot of ALL workers BEFORE removing the failed one
+                # so re_replicate can compute correct replica sets
+                worker_snapshot_for_rereplicate = {k: v.copy() for k, v in workers.items()}
+                # attempt re-replication in background with snapshot
+                threading.Thread(target=re_replicate, args=(wid, worker_snapshot_for_rereplicate), daemon=True).start()
                 # remove worker from registry so mapping reflects live set
                 try:
                     del workers[wid]

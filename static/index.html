@@ -341,17 +341,6 @@
                     <input type="text" id="readKey" placeholder="Enter key name" />
                 </div>
 
-                <div class="form-group">
-                    <label for="readWorker">Read from Worker:</label>
-                    <select id="readWorker">
-                        <option value="">Any Worker (primary)</option>
-                        <option value="w1">Worker 1 (Port 8001)</option>
-                        <option value="w2">Worker 2 (Port 8002)</option>
-                        <option value="w3">Worker 3 (Port 8003)</option>
-                        <option value="w4">Worker 4 (Port 8004)</option>
-                    </select>
-                </div>
-
                 <div class="button-group">
                     <button onclick="readKey()">🔍 Read</button>
                     <button class="button-secondary" onclick="clearReadForm()">Clear</button>
@@ -476,7 +465,6 @@
 
         async function readKey() {
             const key = document.getElementById('readKey').value.trim();
-            const workerChoice = document.getElementById('readWorker').value;
 
             if (!key) {
                 showStatus('readStatus', '⚠️ Key is required', 'error');
@@ -486,13 +474,15 @@
             try {
                 showStatus('readStatus', '⏳ Reading...', 'info');
                 
-                let url;
-                if (workerChoice) {
-                    const worker = WORKERS.find(w => w.id === workerChoice);
-                    url = `http://localhost:${worker.port}/kv/${key}`;
-                } else {
-                    url = `http://localhost:8001/kv/${key}`;
-                }
+                // Get mapping from controller to find the correct worker
+                const mapResponse = await fetch(`http://localhost:8000/map?key=${key}`);
+                const mapData = await mapResponse.json();
+                
+                // Convert worker URL (e.g., "http://worker1:8001") to localhost URL
+                // Extract port number from the worker URL
+                const workerUrl = mapData.primary;
+                const port = workerUrl.match(/:(\d+)/)[1];
+                const url = `http://localhost:${port}/kv/${key}`;
 
                 const response = await fetch(url);
 
