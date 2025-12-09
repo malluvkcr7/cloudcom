@@ -66,20 +66,32 @@ def list_workers():
 
 @app.get("/map")
 def get_mapping(key: str):
-    # ensure we have a registry (helps in test environment where startup event may
-    # not have populated `workers` yet)
-    if not workers:
-        for i, addr in enumerate(DEFAULT_WORKERS):
-            wid = f"w{i}"
-            workers[wid] = {"address": addr, "last_seen": time.time()}
-    live = [workers[w]["address"] for w in sorted(workers.keys())]
-    n = len(live)
-    if n == 0:
+    # build alive worker list based on health
+    alive_workers = []
+    now = time.time()
+    TIMEOUT = 10   # or your watcher timeout
+
+    for wid in sorted(workers.keys()):
+        last = workers[wid]["last_seen"]
+        if now - last <= TIMEOUT:
+            alive_workers.append(workers[wid]["address"])
+
+    if not alive_workers:
         raise HTTPException(status_code=503, detail="no available workers")
+
+    n = len(alive_workers)
+
+    # compute primary index using number of ALIVE workers
     primary = primary_index_for_key(key, n)
+
+    # choose replicas among ALIVE workers
     indices = [(primary + i) % n for i in range(REPLICAS)]
-    replicas = [live[i] for i in indices]
-    return {"primary": replicas[0], "replicas": replicas}
+    replicas = [alive_workers[i] for i in indices]
+
+    return {
+        "primary": replicas[0],
+        "replicas": replicas
+    }
 
 @app.get("/health")
 def health():
