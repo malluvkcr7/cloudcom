@@ -393,7 +393,7 @@
                 <div class="form-group">
                     <label for="listWorker">From Worker:</label>
                     <select id="listWorker">
-                        <option value="">Worker 1 (Primary)</option>
+                        <option value="">Worker 1</option>
                         <option value="w2">Worker 2</option>
                         <option value="w3">Worker 3</option>
                         <option value="w4">Worker 4</option>
@@ -428,40 +428,46 @@
         }
 
         async function writeKey() {
-            const key = document.getElementById('writeKey').value.trim();
-            const value = document.getElementById('writeValue').value.trim();
+    const key = document.getElementById('writeKey').value.trim();
+    const value = document.getElementById('writeValue').value.trim();
 
-            if (!key || !value) {
-                showStatus('writeStatus', '⚠️ Key and value are required', 'error');
-                return;
-            }
+    if (!key || !value) {
+        showStatus('writeStatus', '⚠️ Key and value are required', 'error');
+        return;
+    }
 
-            try {
-                showStatus('writeStatus', '⏳ Writing...', 'info');
-                const response = await fetch(`http://localhost:8001/kv/${key}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ value })
-                });
+    try {
+        showStatus('writeStatus', '⏳ Writing...', 'info');
 
-                if (response.ok) {
-                    const data = await response.json();
-                    showStatus('writeStatus', '✅ Write successful!', 'success');
-                    document.getElementById('writeResult').className = 'result-box';
-                    document.getElementById('writeResult').innerHTML = `<strong>Result:</strong><br/>${JSON.stringify(data, null, 2)}`;
-                    clearWriteForm();
-                } else {
-                    const error = await response.text();
-                    showStatus('writeStatus', `❌ Write failed: ${response.status}`, 'error');
-                    document.getElementById('writeResult').className = 'result-box';
-                    document.getElementById('writeResult').textContent = error;
-                }
-            } catch (error) {
-                showStatus('writeStatus', `❌ Error: ${error.message}`, 'error');
-                document.getElementById('writeResult').className = 'result-box';
-                document.getElementById('writeResult').textContent = error.message;
-            }
+        // 1. Get mapping from controller
+        const mapResponse = await fetch(`http://localhost:8000/map?key=${key}`);
+        const mapData = await mapResponse.json();
+        console.log(mapData)
+        // Extract port from primary worker URL
+        const workerUrl = mapData.primary;
+        const port = workerUrl.match(/:(\d+)/)[1];
+
+        // 2. PUT the value to the correct worker
+        const response = await fetch(`http://localhost:${port}/kv/${key}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ value })
+        });
+
+        if (response.ok) {
+            const data = await response.json();
+            showStatus('writeStatus', '✅ Write successful!', 'success');
+            document.getElementById('writeResult').innerHTML =
+                `<strong>Result:</strong><br/>${JSON.stringify(data, null, 2)}`;
+        } else {
+            showStatus('writeStatus', `❌ Write failed: ${response.status}`, 'error');
+            document.getElementById('writeResult').textContent = await response.text();
         }
+    } catch (error) {
+        showStatus('writeStatus', `❌ Error: ${error.message}`, 'error');
+        document.getElementById('writeResult').textContent = error.message;
+    }
+}
 
         async function readKey() {
             const key = document.getElementById('readKey').value.trim();
