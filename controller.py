@@ -87,75 +87,127 @@ def health():
 
 
 def re_replicate(failed_id: str, snapshot: Dict = None):
-    """Attempt to re-replicate keys for which the failed worker was a replica.
-    This is a simple implementation: query one alive worker for keys and for each
-    key whose replica set included the failed worker, instruct a target alive
-    worker to pull the key from an existing replica.
+    """
+    Re-replication that does not rely on a single source node.
+    - Queries all live workers (based on snapshot) to build the union of keys.
+    - For each key that used to include the failed worker in its replica set,
+      chooses a source among live workers that already have the key and
+      a target among live workers that don't, then instructs the target to pull.
     """
     logger.info(f"[RE-REPLICATE] Starting re-replication for failed worker: {failed_id}")
-    # use provided snapshot (taken before worker was removed from registry)
+
+    # Use provided snapshot (taken before worker was removed), or take a snapshot now.
     if snapshot is None:
         snapshot = {k: v.copy() for k, v in workers.items()}
+
     pre_workers = sorted(snapshot.keys())
     try:
         idx_failed = pre_workers.index(failed_id)
     except ValueError:
         logger.info(f"[RE-REPLICATE] Failed worker {failed_id} not in pre_workers list")
         return
+
     n = len(pre_workers)
-    # current live addresses (exclude failed)
+    failed_addr = snapshot[failed_id]["address"]
+
+    # current live addresses (exclude failed) as seen in the snapshot
     live = [snapshot[w]["address"] for w in pre_workers if w != failed_id]
     if not live:
+        logger.info("[RE-REPLICATE] No live workers to re-replicate to")
         return
 
-    # pick a source worker to enumerate keys
-    source_addr = live[0]
-    try:
-        r = requests.get(f"{source_addr}/keys", timeout=3)
-        keys = r.json().get("keys", [])
-        logger.info(f"[RE-REPLICATE] Found {len(keys)} keys on source {source_addr}")
-    except Exception:
-        keys = []
-        logger.info(f"[RE-REPLICATE] Failed to get keys from source {source_addr}")
+    # --- STEP 1: collect union of keys by querying all live workers ---
+    all_keys = set()
+    worker_keys_map: Dict[str, List[str]] = {}  # addr -> keys list
 
-    for key in keys:
-        # compute replicas list as it was before failure
-        primary = primary_index_for_key(key, n)
-        indices = [(primary + i) % n for i in range(REPLICAS)]
-        replica_ids = [pre_workers[i] for i in indices]
-        # map replica ids to addresses using snapshot
-        replica_addrs = [snapshot[rid]["address"] if rid in snapshot else None for rid in replica_ids]
-        # if failed worker's address was among replicas, we need to replicate elsewhere
-        failed_addr = snapshot[failed_id]["address"]
-        if failed_addr in replica_addrs:
-            logger.info(f"[RE-REPLICATE] Key '{key}' needs re-replication (was on failed worker)")
-            # determine which current live workers already have the key
-            have = []
-            for addr in live:
-                try:
-                    rr = requests.get(f"{addr}/kv/{key}", timeout=2)
-                    if rr.status_code == 200:
-                        have.append(addr)
-                except Exception:
-                    pass
-            # choose a target that is live and not in have
-            target = None
-            for addr in live:
-                if addr not in have:
-                    target = addr
-                    break
-            # choose a source replica among have (if any)
-            src = have[0] if have else source_addr
-            logger.info(f"[RE-REPLICATE] Key '{key}': have={have}, target={target}, src={src}")
-            if target:
-                try:
-                    logger.info(f"[RE-REPLICATE] Instructing {target} to pull '{key}' from {src}")
-                    requests.post(f"{target}/pull", json={"source": src, "keys": [key]}, timeout=5)
-                    logger.info(f"[RE-REPLICATE] Successfully re-replicated '{key}' to {target}")
-                except Exception as e:
-                    logger.info(f"[RE-REPLICATE] Failed to re-replicate '{key}': {e}")
+    for addr in live:
+        try:
+            r = requests.get(f"{addr}/keys", timeout=3)
+            if r.status_code == 200:
+                keys = r.json().get("keys", [])
+                worker_keys_map[addr] = keys
+                all_keys.update(keys)
+                logger.info(f"[RE-REPLICATE] {len(keys)} keys from {addr}")
             else:
-                logger.info(f"[RE-REPLICATE] No target found for '{key}' - all live workers already have it")
+                logger.info(f"[RE-REPLICATE] /keys returned {r.status_code} from {addr}")
+        except Exception as e:
+            logger.info(f"[RE-REPLICATE] Failed to query /keys from {addr}: {e}")
+
+    logger.info(f"[RE-REPLICATE] Collected total {len(all_keys)} unique keys from live workers")
+
+    # --- STEP 2: For each key, compute old replica set and handle if failed was a replica ---
+    for key in list(all_keys):
+        try:
+            # compute replicas list as it was before failure (using n = pre-failure cluster size)
+            primary = primary_index_for_key(key, n)
+            indices = [(primary + i) % n for i in range(REPLICAS)]
+            replica_ids = [pre_workers[i] for i in indices]
+            replica_addrs = [snapshot[rid]["address"] if rid in snapshot else None for rid in replica_ids]
+        except Exception as e:
+            logger.info(f"[RE-REPLICATE] Failed to compute old replicas for key '{key}': {e}")
+            continue
+
+        # Only care about keys for which the failed worker used to be a replica
+        if failed_addr not in replica_addrs:
+            continue
+
+        logger.info(f"[RE-REPLICATE] Key '{key}' had failed replica {failed_addr} (old replicas: {replica_addrs})")
+
+        # Determine which live workers already have the key.
+        # Prefer workers that reported the key via /keys, but double-check by asking /kv/{key}.
+        have = []
+        for addr in live:
+            # If worker reported the key in /keys earlier, count it first
+            reported_has = addr in worker_keys_map and key in worker_keys_map.get(addr, [])
+            if reported_has:
+                have.append(addr)
+                continue
+
+            # otherwise probe with /kv/{key}
+            try:
+                rr = requests.get(f"{addr}/kv/{key}", timeout=2)
+                if rr.status_code == 200:
+                    have.append(addr)
+            except Exception:
+                pass
+
+        # Choose a target: a live worker that does not already have the key
+        target = None
+        for addr in live:
+            if addr not in have:
+                target = addr
+                break
+
+        # Choose a source: pick one from `have` (prefer random to distribute load)
+        src = None
+        if have:
+            # randomize to avoid hot-source thundering
+            import random as _rand
+            src = _rand.choice(have)
+        else:
+            # No live worker seems to have the key (edge case). As fallback,
+            # use the first live worker (it will likely fail to GET and nothing happens).
+            src = live[0]
+
+        logger.info(f"[RE-REPLICATE] Key '{key}': have={have}, src={src}, target={target}")
+
+        if not target:
+            logger.info(f"[RE-REPLICATE] No target found for '{key}' - all live workers already have it")
+            continue
+
+        # Instruct target to pull the key from src
+        try:
+            logger.info(f"[RE-REPLICATE] Instructing {target} to pull '{key}' from {src}")
+            resp = requests.post(f"{target}/pull", json={"source": src, "keys": [key]}, timeout=8)
+            if resp.status_code == 200:
+                logger.info(f"[RE-REPLICATE] Successfully re-replicated '{key}' to {target}")
+            else:
+                logger.info(f"[RE-REPLICATE] Pull returned {resp.status_code} when re-replicating '{key}' to {target}")
+        except Exception as e:
+            logger.info(f"[RE-REPLICATE] Failed to re-replicate '{key}' to {target}: {e}")
+
+    logger.info(f"[RE-REPLICATE] Re-replication pass complete for failed worker: {failed_id}")
+
 
 
 def watcher_loop():

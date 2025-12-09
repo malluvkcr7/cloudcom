@@ -95,96 +95,109 @@ def startup():
 
 @app.put("/kv/{key}")
 def put_key(key: str, kv: KV):
-    # Coordinator behavior: store locally, then synchronously replicate to peers until
-    # we have WRITE_QUORUM acknowledgements (including local store).
-    # Once quorum is reached, replicate to remaining replicas in background.
-    STORE[key] = kv.value
-    # persist locally
-    _persist_key(key, kv.value)
-    ack_count = 1  # self
+    """
+    Correct implementation of a write coordinator:
+    - Coordinator stores locally ONLY if it is part of the replica set.
+    - Performs synchronous replication to reach WRITE_QUORUM.
+    - After quorum, asynchronously replicates to remaining replicas.
+    """
+
+    # Query controller to get the replica set
+    try:
+        r = requests.get(
+            f"{CONTROLLER}/map",
+            params={"key": key},
+            timeout=REQUEST_TIMEOUT
+        )
+        data = r.json()
+        replicas = data.get("replicas", [])
+    except Exception:
+        raise HTTPException(status_code=503, detail="controller unavailable")
+
+    # Normalize addresses
+    norm_self = ADDRESS.rstrip("/")
+    norm_replicas = [a.rstrip("/") for a in replicas]
+
+    # Determine whether THIS worker is part of the replica set
+    is_replica = norm_self in norm_replicas
+
+    # ACK count (local write counts only if node is a replica)
+    ack_count = 0
     attempted = set()
-    max_controller_retries = 5
+
+    # If this coordinator is a replica, store locally
+    if is_replica:
+        STORE[key] = kv.value
+        _persist_key(key, kv.value)
+        ack_count = 1
+        attempted.add(norm_self)
+
+    # ---- QUORUM REPLICATION LOOP ----
     controller_retries = 0
     backoff = 0.3
+    max_retries = 5
 
-    # Keep querying controller for an updated replica map and try newly
-    # reported replicas until we reach WRITE_QUORUM or exhaust retries.
-    all_replicas = []
-    while ack_count < WRITE_QUORUM and controller_retries < max_controller_retries:
-        try:
-            r = requests.get(f"{CONTROLLER}/map", params={"key": key}, timeout=REQUEST_TIMEOUT)
-            data = r.json()
-            replicas = data.get("replicas", [])
-            all_replicas = replicas  # Save for later background replication
-        except Exception:
-            # controller unreachable — wait and retry a couple times
-            controller_retries += 1
-            time.sleep(backoff)
-            continue
+    while ack_count < WRITE_QUORUM and controller_retries < max_retries:
 
-        # build list of candidate addresses excluding self and already attempted
-        candidates = []
-        seen = set()
-        for addr in replicas:
-            a = addr.rstrip("/")
-            if a == ADDRESS.rstrip("/"):
-                continue
-            if a in seen:
-                continue
-            seen.add(a)
-            if a in attempted:
-                continue
-            candidates.append(a)
+        # Try all replicas not yet attempted
+        candidates = [
+            addr for addr in norm_replicas
+            if addr not in attempted and addr != norm_self
+        ]
 
         if not candidates:
-            # no new candidates; bump retry counter and wait briefly
+            # No new replicas left to try
             controller_retries += 1
             time.sleep(backoff)
             continue
 
         random.shuffle(candidates)
         any_success = False
+
         for addr in candidates:
             if ack_count >= WRITE_QUORUM:
                 break
+
             attempted.add(addr)
+
             try:
-                resp = requests.post(f"{addr}/replicate/{key}", json={"value": kv.value}, timeout=REQUEST_TIMEOUT)
+                resp = requests.post(
+                    f"{addr}/replicate/{key}",
+                    json={"value": kv.value},
+                    timeout=REQUEST_TIMEOUT
+                )
                 if resp.status_code == 200:
                     ack_count += 1
                     any_success = True
             except Exception:
-                # unreachable — try next candidate
+                # Replica unreachable — try next
                 pass
 
         if not any_success:
             controller_retries += 1
             time.sleep(backoff)
 
+    # ---- QUORUM SUCCESS ----
     if ack_count >= WRITE_QUORUM:
-        # Quorum achieved! Now replicate to any remaining replicas in background
-        # (the 3rd replica, since we already have 2 acks)
+        # Background replication to remaining replicas
         def background_replicate():
-            remaining = []
-            for addr in all_replicas:
-                a = addr.rstrip("/")
-                if a != ADDRESS.rstrip("/") and a not in attempted:
-                    remaining.append(a)
-            # Try to replicate to any remaining replicas
-            for addr in remaining:
-                try:
-                    requests.post(f"{addr}/replicate/{key}", json={"value": kv.value}, timeout=REQUEST_TIMEOUT)
-                except Exception:
-                    pass
-        
-        # Start background replication thread
-        t = threading.Thread(target=background_replicate, daemon=True)
-        t.start()
-        
+            for addr in norm_replicas:
+                if addr not in attempted:
+                    try:
+                        requests.post(
+                            f"{addr}/replicate/{key}",
+                            json={"value": kv.value},
+                            timeout=REQUEST_TIMEOUT
+                        )
+                    except Exception:
+                        pass
+
+        threading.Thread(target=background_replicate, daemon=True).start()
+
         return {"result": "ok", "acks": ack_count}
-    else:
-        # not enough replicas acknowledged
-        raise HTTPException(status_code=503, detail=f"write failed; acks={ack_count}")
+
+    # ---- QUORUM FAILURE ----
+    raise HTTPException(status_code=503, detail=f"write failed; acks={ack_count}")
 
 @app.post("/replicate/{key}")
 def replicate(key: str, req: ReplicateReq):
@@ -218,7 +231,19 @@ def pull_from(req: PullReq):
         except Exception:
             pass
     return {"result": "pulled", "count": len(req.keys)}
-
+@app.get("/pull")
+def pull():
+    return {"result": "pulled", "count": len(STORE)}
+@app.delete("/delete/{key}")
+def delete_key(key: str):
+    if key in STORE:
+        del STORE[key]
+        # remove persisted key
+        try:
+            os.remove(os.path.join(DATA_DIR, _safe_filename(key)))
+        except Exception:
+            pass
+    return {"result": "deleted"}
 @app.get("/kv/{key}")
 def get_key(key: str):
     if key in STORE:
